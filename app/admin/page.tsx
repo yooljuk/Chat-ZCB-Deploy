@@ -130,6 +130,54 @@ export default function AdminPage() {
     setStats(null);
   };
 
+  // Excel 다운로드
+  const handleExcelDownload = async () => {
+    try {
+      // 전체 로그 조회 (필터 없이)
+      const response = await fetch('/api/logs');
+      const data = await response.json();
+      const allLogs: Log[] = data.logs || [];
+
+      if (allLogs.length === 0) {
+        alert('다운로드할 로그가 없습니다.');
+        return;
+      }
+
+      // xlsx를 동적 import (클라이언트 사이드)
+      const XLSX = await import('xlsx');
+
+      const rows = allLogs.map((log, i) => ({
+        '번호': i + 1,
+        '날짜/시간': new Date(log.timestamp).toLocaleString('ko-KR'),
+        '기관 유형': log.type === 'certification' ? '인증기관' : '컨설팅기관',
+        '질문': log.question,
+        '응답': log.answer,
+        '폴백 여부': log.isFallback ? 'O' : '-',
+      }));
+
+      const ws = XLSX.utils.json_to_sheet(rows);
+
+      // 열 너비 설정
+      ws['!cols'] = [
+        { wch: 6 },   // 번호
+        { wch: 20 },  // 날짜/시간
+        { wch: 12 },  // 기관 유형
+        { wch: 40 },  // 질문
+        { wch: 60 },  // 응답
+        { wch: 10 },  // 폴백 여부
+      ];
+
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, '대화 로그');
+
+      const today = new Date().toISOString().slice(0, 10);
+      XLSX.writeFile(wb, `Chat-ZCB_로그_${today}.xlsx`);
+    } catch (error) {
+      console.error('Excel 다운로드 실패:', error);
+      alert('Excel 다운로드 중 오류가 발생했습니다.');
+    }
+  };
+
   // 인증 화면
   if (!isAuthenticated) {
     return (
@@ -174,12 +222,20 @@ export default function AdminPage() {
       <header className="bg-[#2E7D32] text-white px-6 py-4 shadow-md">
         <div className="max-w-7xl mx-auto flex items-center justify-between">
           <h1 className="text-xl font-semibold">Chat-ZCB 관리자 페이지</h1>
-          <button
-            onClick={handleLogout}
-            className="text-sm bg-[#1B5E20] px-4 py-2 rounded hover:bg-[#145018] transition-colors"
-          >
-            로그아웃
-          </button>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={handleExcelDownload}
+              className="text-sm bg-white text-[#2E7D32] px-4 py-2 rounded font-semibold hover:bg-[#E8F5E9] transition-colors"
+            >
+              Excel 다운로드
+            </button>
+            <button
+              onClick={handleLogout}
+              className="text-sm bg-[#1B5E20] px-4 py-2 rounded hover:bg-[#145018] transition-colors"
+            >
+              로그아웃
+            </button>
+          </div>
         </div>
       </header>
 
