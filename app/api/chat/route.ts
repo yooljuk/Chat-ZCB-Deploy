@@ -1,18 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { GoogleGenerativeAI } from '@google/generative-ai';
-import fs from 'fs';
-import path from 'path';
 import type { QAItem, GuidelineChunk } from '@/lib/types';
 import { loadAllQAData, loadGuidelineChunks, loadEmbeddings } from '@/lib/data-loader';
 import { generateEmbedding, findSimilarByEmbedding } from '@/lib/embeddings';
-
-interface ChatLog {
-  timestamp: string;
-  type: 'certification' | 'consulting';
-  question: string;
-  answer: string;
-  isFallback: boolean;
-}
+import { saveLog, type ChatLog } from '@/lib/kv-logger';
 
 // 폴백 메시지 상수
 const FALLBACK_MESSAGE = `해당 내용은 Chat-ZCB에서 안내드리기 어려운 사항입니다.
@@ -269,28 +260,6 @@ function isFallbackResponse(answer: string): boolean {
     || answer.includes('포함되어 있지 않습니다') || answer.includes('정보가 없습니다');
 }
 
-// 로그 저장
-function saveLog(log: ChatLog): void {
-  const logsDir = path.join(process.cwd(), 'logs');
-  const logsFile = path.join(logsDir, 'chat-logs.json');
-
-  if (!fs.existsSync(logsDir)) {
-    fs.mkdirSync(logsDir, { recursive: true });
-  }
-
-  let logs: ChatLog[] = [];
-  if (fs.existsSync(logsFile)) {
-    try {
-      logs = JSON.parse(fs.readFileSync(logsFile, 'utf-8'));
-    } catch {
-      logs = [];
-    }
-  }
-
-  logs.push(log);
-  fs.writeFileSync(logsFile, JSON.stringify(logs, null, 2), 'utf-8');
-}
-
 // 임베딩 기반 Q&A 검색
 async function findRelevantQAsByEmbedding(
   queryVec: number[],
@@ -411,7 +380,7 @@ export async function POST(request: NextRequest) {
         answer: FALLBACK_MESSAGE,
         isFallback: true
       };
-      saveLog(log);
+      await saveLog(log);
       return NextResponse.json({ answer: FALLBACK_MESSAGE, isFallback: true });
     }
 
@@ -451,7 +420,7 @@ export async function POST(request: NextRequest) {
       isFallback
     };
 
-    saveLog(log);
+    await saveLog(log);
 
     return NextResponse.json({ answer, isFallback });
 

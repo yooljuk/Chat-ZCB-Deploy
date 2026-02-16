@@ -23,6 +23,7 @@ type Stats = {
 export default function AdminPage() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [password, setPassword] = useState('');
+  const [sessionPassword, setSessionPassword] = useState('');
   const [authError, setAuthError] = useState('');
   const [activeTab, setActiveTab] = useState<'logs' | 'stats'>('logs');
 
@@ -55,6 +56,7 @@ export default function AdminPage() {
       const data = await response.json();
 
       if (response.ok && data.success) {
+        setSessionPassword(password);
         setIsAuthenticated(true);
         setPassword('');
       } else {
@@ -126,8 +128,52 @@ export default function AdminPage() {
   const handleLogout = () => {
     setIsAuthenticated(false);
     setPassword('');
+    setSessionPassword('');
     setLogs([]);
     setStats(null);
+  };
+
+  // 로그 삭제
+  const handleDeleteLogs = async (mode: 'all' | 'before') => {
+    let confirmMsg = '전체 로그를 삭제하시겠습니까?\n이 작업은 되돌릴 수 없습니다.';
+    let before: string | undefined;
+
+    if (mode === 'before') {
+      const input = prompt('삭제할 기준 날짜를 입력하세요 (예: 2025-01-01)\n해당 날짜 이전의 로그가 모두 삭제됩니다.');
+      if (!input) return;
+      // 간단한 날짜 형식 검증
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(input)) {
+        alert('날짜 형식이 올바르지 않습니다. (예: 2025-01-01)');
+        return;
+      }
+      before = input;
+      confirmMsg = `${input} 이전의 로그를 삭제하시겠습니까?\n이 작업은 되돌릴 수 없습니다.`;
+    }
+
+    if (!confirm(confirmMsg)) return;
+
+    try {
+      const response = await fetch('/api/logs', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          password: sessionPassword,
+          before,
+        }),
+      });
+      const data = await response.json();
+
+      if (response.ok && data.success) {
+        alert(data.message);
+        fetchLogs();
+        if (activeTab === 'stats') fetchStats();
+      } else {
+        alert(data.error || '삭제에 실패했습니다.');
+      }
+    } catch (error) {
+      console.error('로그 삭제 실패:', error);
+      alert('로그 삭제 중 오류가 발생했습니다.');
+    }
   };
 
   // Excel 다운로드
@@ -222,12 +268,24 @@ export default function AdminPage() {
       <header className="bg-[#2E7D32] text-white px-6 py-4 shadow-md">
         <div className="max-w-7xl mx-auto flex items-center justify-between">
           <h1 className="text-xl font-semibold">Chat-ZCB 관리자 페이지</h1>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
             <button
               onClick={handleExcelDownload}
               className="text-sm bg-white text-[#2E7D32] px-4 py-2 rounded font-semibold hover:bg-[#E8F5E9] transition-colors"
             >
               Excel 다운로드
+            </button>
+            <button
+              onClick={() => handleDeleteLogs('before')}
+              className="text-sm bg-yellow-500 text-white px-4 py-2 rounded font-semibold hover:bg-yellow-600 transition-colors"
+            >
+              기간별 삭제
+            </button>
+            <button
+              onClick={() => handleDeleteLogs('all')}
+              className="text-sm bg-red-600 text-white px-4 py-2 rounded font-semibold hover:bg-red-700 transition-colors"
+            >
+              전체 삭제
             </button>
             <button
               onClick={handleLogout}

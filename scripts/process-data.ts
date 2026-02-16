@@ -16,7 +16,11 @@ import type { QAItem, GuidelineChunk, ProcessingManifest } from '../lib/types';
 const pdfParse = require('pdf-parse');
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const XLSX = require('xlsx');
-const DATA_DIR = path.join(process.cwd(), '..', 'data');
+
+// 데이터 소스 경로: 환경변수 > 기본값(../data)
+const DATA_DIR = process.env.DATA_SOURCE_DIR
+  ? path.resolve(process.env.DATA_SOURCE_DIR)
+  : path.join(process.cwd(), '..', 'data');
 const OUTPUT_DIR = path.join(process.cwd(), 'data');
 const GUIDELINES_DIR = path.join(OUTPUT_DIR, 'guidelines');
 const MANIFEST_PATH = path.join(OUTPUT_DIR, '_manifest.json');

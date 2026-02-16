@@ -6,12 +6,14 @@
     "process-data": "npx tsx scripts/process-data.ts",
     "generate-embeddings": "npx tsx scripts/generate-embeddings.ts",
     "dev": "npx tsx scripts/process-data.ts && next dev",
-    "build": "npx tsx scripts/process-data.ts && next build",
+    "build": "next build",
+    "build:local": "npx tsx scripts/process-data.ts && next build",
     "start": "next start",
     "lint": "next lint"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.0",
+    "@upstash/redis": "^1.36.2",
     "next": "^15.1.0",
     "pdf-parse": "^1.1.1",
     "react": "^19.0.0",

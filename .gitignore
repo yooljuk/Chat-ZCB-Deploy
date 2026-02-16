@@ -41,8 +41,5 @@ next-env.d.ts
 # logs
 /logs/*.json
 
-# auto-generated data files (빌드 시 자동 생성)
-/data/guidelines/chunks.json
-/data/qa-excel-*.json
+# auto-generated data files (로컬 빌드 시 생성, _manifest만 제외)
 /data/_manifest.json
-/data/embeddings.json
