@@ -45,3 +45,4 @@ next-env.d.ts
 /data/guidelines/chunks.json
 /data/qa-excel-*.json
 /data/_manifest.json
+/data/embeddings.json

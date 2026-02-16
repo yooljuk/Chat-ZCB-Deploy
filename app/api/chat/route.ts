@@ -3,7 +3,8 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import fs from 'fs';
 import path from 'path';
 import type { QAItem, GuidelineChunk } from '@/lib/types';
-import { loadAllQAData, loadGuidelineChunks } from '@/lib/data-loader';
+import { loadAllQAData, loadGuidelineChunks, loadEmbeddings } from '@/lib/data-loader';
+import { generateEmbedding, findSimilarByEmbedding } from '@/lib/embeddings';
 
 interface ChatLog {
   timestamp: string;
@@ -36,6 +37,29 @@ const PARTICLES = [
   '은', '는', '이', '가', '을', '를', '에', '의', '와', '과', '로', '도', '만', '란',
 ];
 
+// 동의어 매핑
+const SYNONYMS: Record<string, string[]> = {
+  // 기관명 동의어
+  '컨설팅기관': ['기술지원기관', '컨설팅사'],
+  '기술지원기관': ['컨설팅기관', '컨설팅사'],
+  '컨설팅사': ['기술지원기관', '컨설팅기관'],
+  '컨설팅': ['기술지원'],
+  '기술지원': ['컨설팅'],
+  // 역할/업무 동의어
+  '역할': ['업무범위', '업무', '담당업무', '하는일'],
+  '업무범위': ['역할', '업무', '담당업무'],
+  '업무': ['역할', '업무범위'],
+  // 비용 동의어
+  '비용': ['수수료', '요금', '금액'],
+  '수수료': ['비용', '요금', '금액'],
+  // 절차 동의어
+  '절차': ['과정', '프로세스', '순서', '단계'],
+  '과정': ['절차', '프로세스', '순서'],
+  // 자격 동의어
+  '자격': ['요건', '조건', '기준'],
+  '요건': ['자격', '조건', '기준'],
+};
+
 function stripParticles(word: string): string {
   for (const p of PARTICLES) {
     if (word.length > p.length + 1 && word.endsWith(p)) {
@@ -52,32 +76,57 @@ function extractKeywords(text: string): string[] {
   return tokens.filter(t => !STOPWORDS.has(t));
 }
 
+// 키워드에 동의어를 확장하여 반환
+function expandWithSynonyms(keywords: string[]): string[] {
+  const expanded = [...keywords];
+  for (const kw of keywords) {
+    // 정확히 일치하는 동의어
+    if (SYNONYMS[kw]) {
+      expanded.push(...SYNONYMS[kw]);
+    }
+    // 키워드가 동의어를 포함하는 경우 (예: "컨설팅기관의" → "컨설팅기관" 매칭)
+    for (const [term, synonyms] of Object.entries(SYNONYMS)) {
+      if (kw.includes(term)) {
+        for (const syn of synonyms) {
+          expanded.push(kw.replace(term, syn));
+        }
+      }
+    }
+  }
+  return [...new Set(expanded)];
+}
+
 // 조사 제거된 키워드 추출 (chunk 매칭용)
 function extractCoreKeywords(text: string): string[] {
   const keywords = extractKeywords(text);
   return keywords.map(kw => stripParticles(kw)).filter(kw => kw.length >= 2);
 }
 
-// 키워드 매칭 점수 계산 (부분 매칭 지원)
+// 키워드 매칭 점수 계산 (부분 매칭 + 동의어 지원)
 function calculateMatchScore(userQuestion: string, qaItem: QAItem): number {
-  const userKeywords = extractKeywords(userQuestion);
+  const userKeywords = expandWithSynonyms(extractKeywords(userQuestion));
   const qaQuestion = qaItem.question.replace(/[()（）\[\]?!.,]/g, ' ').toLowerCase();
   const qaAnswer = qaItem.answer.replace(/[()（）\[\]?!.,]/g, ' ').toLowerCase();
 
   let score = 0;
+  const scored = new Set<string>(); // 동의어 중복 점수 방지
 
   for (const keyword of userKeywords) {
     const kw = keyword.toLowerCase();
+    if (scored.has(kw)) continue;
 
     if (qaQuestion.includes(kw)) {
       score += 3;
+      scored.add(kw);
     } else if (qaAnswer.includes(kw)) {
       score += 1;
+      scored.add(kw);
     } else {
       const qaKeywords = extractKeywords(qaItem.question);
       for (const qk of qaKeywords) {
         if (kw.includes(qk.toLowerCase()) || qk.toLowerCase().includes(kw)) {
           score += 2;
+          scored.add(kw);
           break;
         }
       }
@@ -99,22 +148,25 @@ function findRelevantQAs(question: string, qaData: QAItem[]): { qas: QAItem[]; t
 
   const filtered = sorted
     .filter(item => item.score >= 2)
-    .slice(0, 3)
+    .slice(0, 5)
     .map(item => item.qa);
 
   return { qas: filtered, topScore };
 }
 
-// 지침 chunk 매칭 점수 계산 (조사 제거 + 부분 매칭)
+// 지침 chunk 매칭 점수 계산 (조사 제거 + 부분 매칭 + 동의어)
 function calculateChunkScore(userQuestion: string, chunk: GuidelineChunk): number {
-  const userKeywords = extractCoreKeywords(userQuestion);
+  const userKeywords = expandWithSynonyms(extractCoreKeywords(userQuestion));
   const content = chunk.content.toLowerCase();
 
   let score = 0;
+  const scored = new Set<string>();
   for (const keyword of userKeywords) {
     const kw = keyword.toLowerCase();
+    if (scored.has(kw)) continue;
     if (content.includes(kw)) {
       score += 2;
+      scored.add(kw);
     }
   }
 
@@ -153,18 +205,29 @@ function findRelevantChunks(
   return selected;
 }
 
-// 시스템 프롬프트 생성 (지침 참고 시 출처 표기 지시 추가)
+// 시스템 프롬프트 생성
 function getSystemPrompt(type: 'certification' | 'consulting', hasGuidelines: boolean): string {
   const institutionType = type === 'certification'
     ? '인증기관'
     : '컨설팅(기술지원)기관';
 
   let prompt = `당신은 탄소중립건축인증(ZCB인증) ${institutionType} 전용 AI 상담원 Chat-ZCB입니다.
-아래 [참고 답변]의 내용을 활용하여 사용자 질문에 격식체(~입니다, ~바랍니다)로 답변해 주세요.
-참고 답변의 내용만 활용하고, 없는 내용을 만들어내지 마세요.`;
+
+[답변 규칙]
+1. 반드시 [참고 답변]과 [지침서 참고 내용]에 있는 정보만 사용하여 답변하세요.
+2. 사용자의 질문 의도를 정확히 파악하세요. 예를 들어 "역할"을 물으면 "역할/업무범위"에 대해 답하고, "어디인가요"를 물으면 "기관 목록"을 답하세요.
+3. 참고 자료에 여러 Q&A가 제공되더라도, 사용자 질문과 가장 관련 있는 내용만 선별하여 답변하세요.
+4. 참고 자료에 해당 내용이 없으면 "해당 내용은 현재 제공된 자료에 포함되어 있지 않습니다."라고 답하세요.
+5. 참고 자료에 없는 내용을 추측하거나 만들어내지 마세요.
+6. "기술지원기관"과 "컨설팅기관"은 동일한 기관을 의미합니다.
+
+[답변 형식]
+- 격식체(~입니다, ~바랍니다)를 사용합니다.
+- 항목이 여러 개인 경우 번호를 매겨 나열합니다.
+- 답변은 간결하되 핵심 정보를 빠뜨리지 마세요.`;
 
   if (hasGuidelines) {
-    prompt += `\n[지침서 참고 내용]이 포함된 경우, 해당 내용을 활용하여 답변하되 답변 마지막에 "(참고: {출처 지침서명})" 형태로 출처를 표기해 주세요.`;
+    prompt += `\n- [지침서 참고 내용]을 활용한 경우, 답변 마지막에 "(참고: {출처 지침서명})" 형태로 출처를 표기합니다.`;
   }
 
   return prompt;
@@ -228,6 +291,55 @@ function saveLog(log: ChatLog): void {
   fs.writeFileSync(logsFile, JSON.stringify(logs, null, 2), 'utf-8');
 }
 
+// 임베딩 기반 Q&A 검색
+async function findRelevantQAsByEmbedding(
+  queryVec: number[],
+  qaData: QAItem[]
+): Promise<{ qas: QAItem[]; topScore: number }> {
+  const embeddingData = loadEmbeddings();
+  if (!embeddingData || embeddingData.qaEmbeddings.length === 0) {
+    return { qas: [], topScore: 0 };
+  }
+
+  const qaMap = new Map(qaData.map(qa => [qa.id, qa]));
+  const matches = findSimilarByEmbedding(queryVec, embeddingData.qaEmbeddings, 5, 0.5);
+  const topScore = matches[0]?.score || 0;
+  const qas = matches
+    .map(m => qaMap.get(m.id as number))
+    .filter((qa): qa is QAItem => qa !== undefined);
+
+  return { qas, topScore };
+}
+
+// 임베딩 기반 지침 chunk 검색
+function findRelevantChunksByEmbedding(
+  queryVec: number[],
+  chunks: GuidelineChunk[]
+): GuidelineChunk[] {
+  const embeddingData = loadEmbeddings();
+  if (!embeddingData || embeddingData.chunkEmbeddings.length === 0) {
+    return [];
+  }
+
+  const chunkMap = new Map(chunks.map(c => [c.id, c]));
+  const matches = findSimilarByEmbedding(queryVec, embeddingData.chunkEmbeddings, 5, 0.5);
+
+  // 중복 내용 제거
+  const selected: GuidelineChunk[] = [];
+  const seenContent = new Set<string>();
+
+  for (const match of matches) {
+    const chunk = chunkMap.get(match.id as string);
+    if (!chunk) continue;
+    const contentKey = chunk.content.substring(0, 100).replace(/\s+/g, '');
+    if (seenContent.has(contentKey)) continue;
+    seenContent.add(contentKey);
+    selected.push(chunk);
+  }
+
+  return selected;
+}
+
 // POST 요청 핸들러
 export async function POST(request: NextRequest) {
   try {
@@ -248,22 +360,49 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 1. Q&A 데이터 로드 (data-loader 사용, 캐시 적용)
+    // 1. 데이터 로드
     const qaData = loadAllQAData(type);
-
-    // 2. 관련 Q&A 추출
-    const { qas: relevantQAs, topScore } = findRelevantQAs(message, qaData);
-
-    // 3. 지침 chunks 검색 (항상 검색, Q&A 보충)
     const allChunks = loadGuidelineChunks();
-    let relevantChunks = findRelevantChunks(message, allChunks);
+    const embeddingData = loadEmbeddings();
 
-    // Q&A 점수가 충분히 높고 chunk가 보충 역할만 하면 상위 1개
-    if (topScore >= 8 && relevantChunks.length > 0) {
-      relevantChunks = relevantChunks.slice(0, 1);
+    let relevantQAs: QAItem[] = [];
+    let relevantChunks: GuidelineChunk[] = [];
+    let searchMethod: 'embedding' | 'keyword' = 'keyword';
+
+    // 2. 임베딩 기반 검색 (primary)
+    if (embeddingData) {
+      try {
+        const queryVec = await generateEmbedding(message);
+        const embQAs = await findRelevantQAsByEmbedding(queryVec, qaData);
+        const embChunks = findRelevantChunksByEmbedding(queryVec, allChunks);
+
+        if (embQAs.qas.length > 0 || embChunks.length > 0) {
+          relevantQAs = embQAs.qas;
+          relevantChunks = embChunks;
+          searchMethod = 'embedding';
+
+          // Q&A 유사도가 높으면 chunk는 보충용 1개로 제한
+          if (embQAs.topScore >= 0.75 && relevantChunks.length > 0) {
+            relevantChunks = relevantChunks.slice(0, 1);
+          }
+        }
+      } catch (err) {
+        console.error('임베딩 검색 실패, 키워드 검색으로 fallback:', err);
+      }
     }
 
-    // 4. Q&A와 지침 모두 결과 없으면 폴백
+    // 3. 키워드 매칭 (fallback)
+    if (searchMethod === 'keyword') {
+      const { qas, topScore } = findRelevantQAs(message, qaData);
+      relevantQAs = qas;
+      relevantChunks = findRelevantChunks(message, allChunks);
+
+      if (topScore >= 8 && relevantChunks.length > 0) {
+        relevantChunks = relevantChunks.slice(0, 1);
+      }
+    }
+
+    // 4. 결과 없으면 폴백
     if (relevantQAs.length === 0 && relevantChunks.length === 0) {
       const log: ChatLog = {
         timestamp: new Date().toISOString(),
@@ -292,7 +431,7 @@ export async function POST(request: NextRequest) {
     const result = await model.generateContent({
       contents: [{ role: 'user', parts: [{ text: fullPrompt }] }],
       generationConfig: {
-        temperature: 0.2,
+        temperature: 0.1,
         maxOutputTokens: 1000,
       }
     });

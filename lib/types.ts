@@ -15,6 +15,15 @@ export interface GuidelineChunk {
   pageStart: number;     // 시작 페이지 (추정)
 }
 
+// 임베딩 데이터 (사전 생성된 벡터)
+export interface EmbeddingData {
+  qaEmbeddings: { id: number; vector: number[] }[];
+  chunkEmbeddings: { id: string; vector: number[] }[];
+  model: string;
+  dimensions: number;
+  generatedAt: string;
+}
+
 // 데이터 처리 매니페스트 (변경 감지용)
 export interface ProcessingManifest {
   lastProcessed: string; // ISO datetime

@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "process-data": "npx tsx scripts/process-data.ts",
+    "generate-embeddings": "npx tsx scripts/generate-embeddings.ts",
     "dev": "npx tsx scripts/process-data.ts && next dev",
     "build": "npx tsx scripts/process-data.ts && next build",
     "start": "next start",
