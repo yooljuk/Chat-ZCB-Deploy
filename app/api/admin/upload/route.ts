@@ -1,16 +1,18 @@
 /**
- * 관리자 Excel 업로드 API
+ * 관리자 파일 업로드 API (Excel + PDF)
  *
- * POST   — Excel 업로드 → 파싱 → 임베딩 생성 → Redis 저장
+ * POST   — Excel/PDF 업로드 → 파싱 → 임베딩 생성 → Redis 저장
  * GET    — 업로드된 파일 목록 조회
  * DELETE — 특정 파일 삭제
  */
 
 import { NextRequest, NextResponse } from 'next/server';
 import { parseExcelBuffer } from '@/lib/excel-parser';
+import { parsePdfBuffer } from '@/lib/pdf-parser';
 import { generateBatchEmbeddings } from '@/lib/embeddings';
 import {
   saveUploadedQA,
+  saveUploadedChunks,
   getUploadedFiles,
   deleteUploadedFile,
 } from '@/lib/kv-data';
@@ -19,7 +21,7 @@ function isAuthorized(password: string): boolean {
   return password === process.env.ADMIN_PASSWORD;
 }
 
-// ─── POST: Excel 업로드 처리 ─────────────────────────────
+// ─── POST: Excel/PDF 업로드 처리 ──────────────────────────
 
 export async function POST(request: NextRequest) {
   try {
@@ -36,15 +38,49 @@ export async function POST(request: NextRequest) {
     }
 
     const filename = file.name;
-    if (!/\.(xlsx|xls)$/i.test(filename)) {
+    const isPdf = /\.pdf$/i.test(filename);
+    const isExcel = /\.(xlsx|xls)$/i.test(filename);
+
+    if (!isPdf && !isExcel) {
       return NextResponse.json(
-        { error: 'Excel 파일(.xlsx, .xls)만 업로드 가능합니다.' },
+        { error: 'Excel(.xlsx, .xls) 또는 PDF(.pdf) 파일만 업로드 가능합니다.' },
         { status: 400 }
       );
     }
 
-    // 1. Excel 파싱
     const buffer = Buffer.from(await file.arrayBuffer());
+
+    // ─── PDF 처리 ───────────────────────────────────
+    if (isPdf) {
+      const { chunks, pageCount, textLength } = await parsePdfBuffer(buffer, filename);
+
+      if (chunks.length === 0) {
+        return NextResponse.json(
+          { error: 'PDF에서 텍스트를 추출할 수 없습니다.' },
+          { status: 400 }
+        );
+      }
+
+      // 임베딩 생성 (chunk content 기반)
+      const texts = chunks.map(c => c.content);
+      const vectors = await generateBatchEmbeddings(texts);
+      const embeddings = chunks.map((c, idx) => ({
+        id: c.id,
+        vector: vectors[idx],
+      }));
+
+      // Redis 저장
+      await saveUploadedChunks(filename, chunks, embeddings);
+
+      return NextResponse.json({
+        success: true,
+        message: `${filename} 업로드 완료 (${pageCount}페이지, ${textLength}자)`,
+        itemCount: chunks.length,
+        fileType: 'pdf',
+      });
+    }
+
+    // ─── Excel 처리 ──────────────────────────────────
     const items = parseExcelBuffer(buffer, filename);
 
     if (items.length === 0) {
@@ -54,7 +90,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 2. 임베딩 생성
+    // 임베딩 생성
     const texts = items.map(item => `${item.question} ${item.answer}`);
     const vectors = await generateBatchEmbeddings(texts);
     const embeddings = items.map((item, idx) => ({
@@ -62,13 +98,14 @@ export async function POST(request: NextRequest) {
       vector: vectors[idx],
     }));
 
-    // 3. Redis 저장
+    // Redis 저장
     await saveUploadedQA(filename, items, embeddings);
 
     return NextResponse.json({
       success: true,
       message: `${filename} 업로드 완료`,
       itemCount: items.length,
+      fileType: 'excel',
     });
   } catch (error) {
     console.error('[upload] POST 오류:', error);

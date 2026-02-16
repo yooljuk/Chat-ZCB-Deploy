@@ -24,6 +24,7 @@ type UploadedFile = {
   filename: string;
   uploadedAt: string;
   itemCount: number;
+  type: 'excel' | 'pdf';
 };
 
 export default function AdminPage() {
@@ -136,15 +137,22 @@ export default function AdminPage() {
     }
   };
 
-  // Excel 업로드
+  // Excel/PDF 업로드
   const handleFileUpload = async (file: File) => {
-    if (!/\.(xlsx|xls)$/i.test(file.name)) {
-      alert('Excel 파일(.xlsx, .xls)만 업로드 가능합니다.');
+    const isPdf = /\.pdf$/i.test(file.name);
+    const isExcel = /\.(xlsx|xls)$/i.test(file.name);
+
+    if (!isPdf && !isExcel) {
+      alert('Excel(.xlsx, .xls) 또는 PDF(.pdf) 파일만 업로드 가능합니다.');
       return;
     }
 
     setIsUploading(true);
-    setUploadProgress('Excel 파일 파싱 및 임베딩 생성 중...');
+    setUploadProgress(
+      isPdf
+        ? 'PDF 텍스트 추출 및 임베딩 생성 중...'
+        : 'Excel 파일 파싱 및 임베딩 생성 중...'
+    );
 
     try {
       const formData = new FormData();
@@ -160,7 +168,8 @@ export default function AdminPage() {
 
       if (response.ok && data.success) {
         setUploadProgress('');
-        alert(`${data.message} (${data.itemCount}건의 Q&A)`);
+        const countLabel = data.fileType === 'pdf' ? `${data.itemCount}개 chunk` : `${data.itemCount}건의 Q&A`;
+        alert(`${data.message} (${countLabel})`);
         fetchUploadedFiles();
       } else {
         alert(data.error || '업로드에 실패했습니다.');
@@ -176,7 +185,7 @@ export default function AdminPage() {
 
   // 업로드 파일 삭제
   const handleDeleteUploadedFile = async (filename: string) => {
-    if (!confirm(`"${filename}" 파일을 삭제하시겠습니까?\n해당 Q&A 데이터가 챗봇에서 제거됩니다.`)) {
+    if (!confirm(`"${filename}" 파일을 삭제하시겠습니까?\n해당 데이터가 챗봇에서 제거됩니다.`)) {
       return;
     }
 
@@ -609,7 +618,7 @@ export default function AdminPage() {
         {/* 데이터 관리 탭 */}
         {activeTab === 'data' && (
           <div className="space-y-6">
-            {/* Excel 업로드 영역 */}
+            {/* 파일 업로드 영역 */}
             <div
               className={`bg-white p-8 rounded-lg shadow-sm border-2 border-dashed transition-colors ${
                 dragOver
@@ -643,12 +652,12 @@ export default function AdminPage() {
                   />
                 </svg>
                 <p className="mt-3 text-sm text-[#666]">
-                  Excel 파일을 드래그하거나{' '}
+                  Excel 또는 PDF 파일을 드래그하거나{' '}
                   <label className="text-[#2E7D32] font-semibold cursor-pointer hover:underline">
                     클릭하여 선택
                     <input
                       type="file"
-                      accept=".xlsx,.xls"
+                      accept=".xlsx,.xls,.pdf"
                       className="hidden"
                       onChange={(e) => {
                         const file = e.target.files?.[0];
@@ -660,7 +669,7 @@ export default function AdminPage() {
                   하세요
                 </p>
                 <p className="mt-1 text-xs text-[#999]">
-                  .xlsx, .xls 파일 지원 | 질문/답변 컬럼이 포함된 Excel 파일
+                  .xlsx, .xls, .pdf 파일 지원 | Excel: Q&A 데이터 / PDF: 지침서 텍스트
                 </p>
               </div>
             </div>
@@ -692,8 +701,9 @@ export default function AdminPage() {
                     <thead className="bg-[#F5F5F5]">
                       <tr>
                         <th className="px-6 py-3 text-left text-sm font-semibold text-[#333]">파일명</th>
+                        <th className="px-6 py-3 text-center text-sm font-semibold text-[#333]">유형</th>
                         <th className="px-6 py-3 text-left text-sm font-semibold text-[#333]">업로드일</th>
-                        <th className="px-6 py-3 text-center text-sm font-semibold text-[#333]">Q&A 수</th>
+                        <th className="px-6 py-3 text-center text-sm font-semibold text-[#333]">데이터 수</th>
                         <th className="px-6 py-3 text-center text-sm font-semibold text-[#333]">관리</th>
                       </tr>
                     </thead>
@@ -703,11 +713,22 @@ export default function AdminPage() {
                           <td className="px-6 py-4 text-sm text-[#333] font-medium">
                             {file.filename}
                           </td>
+                          <td className="px-6 py-4 text-sm text-center">
+                            <span className={`inline-block px-2 py-0.5 rounded text-xs font-semibold ${
+                              file.type === 'pdf'
+                                ? 'bg-red-100 text-red-700'
+                                : 'bg-green-100 text-green-700'
+                            }`}>
+                              {file.type === 'pdf' ? 'PDF' : 'Excel'}
+                            </span>
+                          </td>
                           <td className="px-6 py-4 text-sm text-[#666]">
                             {new Date(file.uploadedAt).toLocaleString('ko-KR')}
                           </td>
                           <td className="px-6 py-4 text-sm text-center text-[#333] font-semibold">
-                            {file.itemCount}건
+                            {file.type === 'pdf'
+                              ? `${file.itemCount}개 chunk`
+                              : `${file.itemCount}건 Q&A`}
                           </td>
                           <td className="px-6 py-4 text-center">
                             <button
