@@ -4,6 +4,7 @@ import type { QAItem, GuidelineChunk } from '@/lib/types';
 import { loadAllQAData, loadGuidelineChunks, loadEmbeddings } from '@/lib/data-loader';
 import { generateEmbedding, findSimilarByEmbedding } from '@/lib/embeddings';
 import { saveLog, type ChatLog } from '@/lib/kv-logger';
+import { loadAllUploadedData } from '@/lib/kv-data';
 
 // 폴백 메시지 상수
 const FALLBACK_MESSAGE = `해당 내용은 Chat-ZCB에서 안내드리기 어려운 사항입니다.
@@ -260,18 +261,26 @@ function isFallbackResponse(answer: string): boolean {
     || answer.includes('포함되어 있지 않습니다') || answer.includes('정보가 없습니다');
 }
 
-// 임베딩 기반 Q&A 검색
+// 임베딩 기반 Q&A 검색 (정적 + 업로드 임베딩 병합)
 async function findRelevantQAsByEmbedding(
   queryVec: number[],
-  qaData: QAItem[]
+  qaData: QAItem[],
+  uploadedEmbeddings: { id: number; vector: number[] }[] = []
 ): Promise<{ qas: QAItem[]; topScore: number }> {
   const embeddingData = loadEmbeddings();
-  if (!embeddingData || embeddingData.qaEmbeddings.length === 0) {
+
+  // 정적 임베딩 + 업로드 임베딩 병합
+  const allEmbeddings: { id: number | string; vector: number[] }[] = [
+    ...(embeddingData?.qaEmbeddings || []),
+    ...uploadedEmbeddings,
+  ];
+
+  if (allEmbeddings.length === 0) {
     return { qas: [], topScore: 0 };
   }
 
   const qaMap = new Map(qaData.map(qa => [qa.id, qa]));
-  const matches = findSimilarByEmbedding(queryVec, embeddingData.qaEmbeddings, 5, 0.5);
+  const matches = findSimilarByEmbedding(queryVec, allEmbeddings, 5, 0.5);
   const topScore = matches[0]?.score || 0;
   const qas = matches
     .map(m => qaMap.get(m.id as number))
@@ -329,20 +338,31 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 1. 데이터 로드
-    const qaData = loadAllQAData(type);
+    // 1. 데이터 로드 (정적 + 업로드 병합)
+    const staticQA = loadAllQAData(type);
     const allChunks = loadGuidelineChunks();
     const embeddingData = loadEmbeddings();
+
+    // 업로드된 데이터 (Redis)
+    let uploadedData = { items: [] as QAItem[], embeddings: [] as { id: number; vector: number[] }[] };
+    try {
+      uploadedData = await loadAllUploadedData();
+    } catch (err) {
+      console.error('업로드 데이터 로드 실패:', err);
+    }
+
+    // 병합
+    const qaData = [...staticQA, ...uploadedData.items];
 
     let relevantQAs: QAItem[] = [];
     let relevantChunks: GuidelineChunk[] = [];
     let searchMethod: 'embedding' | 'keyword' = 'keyword';
 
     // 2. 임베딩 기반 검색 (primary)
-    if (embeddingData) {
+    if (embeddingData || uploadedData.embeddings.length > 0) {
       try {
         const queryVec = await generateEmbedding(message);
-        const embQAs = await findRelevantQAsByEmbedding(queryVec, qaData);
+        const embQAs = await findRelevantQAsByEmbedding(queryVec, qaData, uploadedData.embeddings);
         const embChunks = findRelevantChunksByEmbedding(queryVec, allChunks);
 
         if (embQAs.qas.length > 0 || embChunks.length > 0) {

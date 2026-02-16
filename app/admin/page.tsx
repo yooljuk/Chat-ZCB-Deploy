@@ -20,12 +20,18 @@ type Stats = {
   };
 };
 
+type UploadedFile = {
+  filename: string;
+  uploadedAt: string;
+  itemCount: number;
+};
+
 export default function AdminPage() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [password, setPassword] = useState('');
   const [sessionPassword, setSessionPassword] = useState('');
   const [authError, setAuthError] = useState('');
-  const [activeTab, setActiveTab] = useState<'logs' | 'stats'>('logs');
+  const [activeTab, setActiveTab] = useState<'logs' | 'stats' | 'data'>('logs');
 
   // 로그 관련 상태
   const [logs, setLogs] = useState<Log[]>([]);
@@ -38,6 +44,13 @@ export default function AdminPage() {
   // 통계 관련 상태
   const [stats, setStats] = useState<Stats | null>(null);
   const [isLoadingStats, setIsLoadingStats] = useState(false);
+
+  // 데이터 관리 관련 상태
+  const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
+  const [isLoadingFiles, setIsLoadingFiles] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState('');
+  const [dragOver, setDragOver] = useState(false);
 
   // 비밀번호 인증
   const handleAuth = async (e: React.FormEvent) => {
@@ -107,13 +120,95 @@ export default function AdminPage() {
     }
   };
 
+  // 업로드 파일 목록 불러오기
+  const fetchUploadedFiles = async () => {
+    setIsLoadingFiles(true);
+    try {
+      const response = await fetch('/api/admin/upload');
+      const data = await response.json();
+      if (response.ok) {
+        setUploadedFiles(data.files || []);
+      }
+    } catch (error) {
+      console.error('Failed to fetch uploaded files:', error);
+    } finally {
+      setIsLoadingFiles(false);
+    }
+  };
+
+  // Excel 업로드
+  const handleFileUpload = async (file: File) => {
+    if (!/\.(xlsx|xls)$/i.test(file.name)) {
+      alert('Excel 파일(.xlsx, .xls)만 업로드 가능합니다.');
+      return;
+    }
+
+    setIsUploading(true);
+    setUploadProgress('Excel 파일 파싱 및 임베딩 생성 중...');
+
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('password', sessionPassword);
+
+      const response = await fetch('/api/admin/upload', {
+        method: 'POST',
+        body: formData,
+      });
+
+      const data = await response.json();
+
+      if (response.ok && data.success) {
+        setUploadProgress('');
+        alert(`${data.message} (${data.itemCount}건의 Q&A)`);
+        fetchUploadedFiles();
+      } else {
+        alert(data.error || '업로드에 실패했습니다.');
+      }
+    } catch (error) {
+      console.error('업로드 실패:', error);
+      alert('업로드 중 오류가 발생했습니다.');
+    } finally {
+      setIsUploading(false);
+      setUploadProgress('');
+    }
+  };
+
+  // 업로드 파일 삭제
+  const handleDeleteUploadedFile = async (filename: string) => {
+    if (!confirm(`"${filename}" 파일을 삭제하시겠습니까?\n해당 Q&A 데이터가 챗봇에서 제거됩니다.`)) {
+      return;
+    }
+
+    try {
+      const response = await fetch('/api/admin/upload', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: sessionPassword, filename }),
+      });
+
+      const data = await response.json();
+      if (response.ok && data.success) {
+        alert(data.message);
+        fetchUploadedFiles();
+      } else {
+        alert(data.error || '삭제에 실패했습니다.');
+      }
+    } catch (error) {
+      console.error('파일 삭제 실패:', error);
+      alert('삭제 중 오류가 발생했습니다.');
+    }
+  };
+
   // 탭 변경 시 데이터 로드
   useEffect(() => {
     if (isAuthenticated) {
       if (activeTab === 'logs') {
         fetchLogs();
-      } else {
+      } else if (activeTab === 'stats') {
         fetchStats();
+      } else if (activeTab === 'data') {
+        fetchUploadedFiles();
       }
     }
   }, [isAuthenticated, activeTab]);
@@ -320,6 +415,16 @@ export default function AdminPage() {
           >
             통계
           </button>
+          <button
+            onClick={() => setActiveTab('data')}
+            className={`px-6 py-3 rounded-lg font-semibold transition-colors ${
+              activeTab === 'data'
+                ? 'bg-[#2E7D32] text-white'
+                : 'bg-white text-[#333] hover:bg-[#E8F5E9]'
+            }`}
+          >
+            데이터 관리
+          </button>
         </div>
 
         {/* 대화 로그 탭 */}
@@ -498,6 +603,127 @@ export default function AdminPage() {
                 통계 데이터가 없습니다.
               </div>
             )}
+          </div>
+        )}
+
+        {/* 데이터 관리 탭 */}
+        {activeTab === 'data' && (
+          <div className="space-y-6">
+            {/* Excel 업로드 영역 */}
+            <div
+              className={`bg-white p-8 rounded-lg shadow-sm border-2 border-dashed transition-colors ${
+                dragOver
+                  ? 'border-[#2E7D32] bg-[#E8F5E9]'
+                  : 'border-[#E0E0E0]'
+              } ${isUploading ? 'opacity-60 pointer-events-none' : ''}`}
+              onDragOver={(e) => {
+                e.preventDefault();
+                setDragOver(true);
+              }}
+              onDragLeave={() => setDragOver(false)}
+              onDrop={(e) => {
+                e.preventDefault();
+                setDragOver(false);
+                const file = e.dataTransfer.files[0];
+                if (file) handleFileUpload(file);
+              }}
+            >
+              <div className="text-center">
+                <svg
+                  className="mx-auto h-12 w-12 text-[#999]"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={1.5}
+                    d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"
+                  />
+                </svg>
+                <p className="mt-3 text-sm text-[#666]">
+                  Excel 파일을 드래그하거나{' '}
+                  <label className="text-[#2E7D32] font-semibold cursor-pointer hover:underline">
+                    클릭하여 선택
+                    <input
+                      type="file"
+                      accept=".xlsx,.xls"
+                      className="hidden"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (file) handleFileUpload(file);
+                        e.target.value = '';
+                      }}
+                    />
+                  </label>
+                  하세요
+                </p>
+                <p className="mt-1 text-xs text-[#999]">
+                  .xlsx, .xls 파일 지원 | 질문/답변 컬럼이 포함된 Excel 파일
+                </p>
+              </div>
+            </div>
+
+            {/* 업로드 진행 상태 */}
+            {isUploading && (
+              <div className="bg-[#E8F5E9] p-4 rounded-lg flex items-center gap-3">
+                <div className="animate-spin h-5 w-5 border-2 border-[#2E7D32] border-t-transparent rounded-full" />
+                <span className="text-sm text-[#2E7D32] font-medium">
+                  {uploadProgress || '처리 중...'}
+                </span>
+              </div>
+            )}
+
+            {/* 업로드된 파일 목록 */}
+            <div className="bg-white rounded-lg shadow-sm overflow-hidden">
+              <div className="px-6 py-4 border-b border-[#E0E0E0]">
+                <h3 className="text-lg font-semibold text-[#333]">업로드된 파일</h3>
+              </div>
+              {isLoadingFiles ? (
+                <div className="p-8 text-center text-[#666]">로딩 중...</div>
+              ) : uploadedFiles.length === 0 ? (
+                <div className="p-8 text-center text-[#666]">
+                  업로드된 파일이 없습니다.
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full">
+                    <thead className="bg-[#F5F5F5]">
+                      <tr>
+                        <th className="px-6 py-3 text-left text-sm font-semibold text-[#333]">파일명</th>
+                        <th className="px-6 py-3 text-left text-sm font-semibold text-[#333]">업로드일</th>
+                        <th className="px-6 py-3 text-center text-sm font-semibold text-[#333]">Q&A 수</th>
+                        <th className="px-6 py-3 text-center text-sm font-semibold text-[#333]">관리</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-[#E0E0E0]">
+                      {uploadedFiles.map((file) => (
+                        <tr key={file.filename} className="hover:bg-[#F5F5F5]">
+                          <td className="px-6 py-4 text-sm text-[#333] font-medium">
+                            {file.filename}
+                          </td>
+                          <td className="px-6 py-4 text-sm text-[#666]">
+                            {new Date(file.uploadedAt).toLocaleString('ko-KR')}
+                          </td>
+                          <td className="px-6 py-4 text-sm text-center text-[#333] font-semibold">
+                            {file.itemCount}건
+                          </td>
+                          <td className="px-6 py-4 text-center">
+                            <button
+                              onClick={() => handleDeleteUploadedFile(file.filename)}
+                              className="text-sm text-red-600 font-semibold hover:text-red-800 transition-colors"
+                            >
+                              삭제
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
           </div>
         )}
       </div>
